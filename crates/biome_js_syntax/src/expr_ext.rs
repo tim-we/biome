@@ -2016,18 +2016,6 @@ impl JsCallExpression {
                     && (callee.contains_a_test_pattern()
                         || matches!(callee, AnyJsExpression::JsCallExpression(call_expression) if call_expression.callee()?.contains_a_test_each_pattern())) =>
             {
-                // it('name', callback, duration)
-                if !matches!(
-                    third,
-                    None | Some(Ok(AnyJsCallArgument::AnyJsExpression(
-                        AnyJsLiteralExpression(
-                            self::AnyJsLiteralExpression::JsNumberLiteralExpression(_)
-                        )
-                    )))
-                ) {
-                    return Ok(false);
-                }
-
                 if second
                     .as_any_js_expression()
                     .is_some_and(is_angular_test_wrapper)
@@ -2035,23 +2023,27 @@ impl JsCallExpression {
                     return Ok(true);
                 }
 
-                let (parameters, has_block_body) = match second {
-                    AnyJsCallArgument::AnyJsExpression(JsFunctionExpression(function)) => (
-                        function
-                            .parameters()
-                            .map(AnyJsArrowFunctionParameters::from),
-                        true,
-                    ),
-                    AnyJsCallArgument::AnyJsExpression(JsArrowFunctionExpression(arrow)) => (
-                        arrow.parameters(),
-                        arrow
-                            .body()
-                            .is_ok_and(|body| matches!(body, AnyJsFunctionBody::JsFunctionBody(_))),
-                    ),
-                    _ => return Ok(false),
-                };
+                // Pattern: (name, callback, [duration])
+                if is_function_with_block_body(&second)? {
+                    // Validate optional third argument is a number (duration)
+                    return Ok(matches!(
+                        third,
+                        None | Some(Ok(AnyJsCallArgument::AnyJsExpression(
+                            AnyJsLiteralExpression(
+                                self::AnyJsLiteralExpression::JsNumberLiteralExpression(_)
+                            )
+                        )))
+                    ));
+                }
 
-                Ok(arguments.args().len() == 2 || (parameters?.len() <= 1 && has_block_body))
+                // Pattern: (name, options, callback)
+                if is_object_expression(&second) {
+                    if let Some(Ok(third_arg)) = third {
+                        return is_function_with_block_body(&third_arg);
+                    }
+                }
+
+                Ok(false)
             }
             _ => Ok(false),
         }
@@ -2101,6 +2093,39 @@ fn is_unit_test_set_up_callee(callee: &AnyJsExpression) -> bool {
             }),
         _ => false,
     }
+}
+
+/// Checks if a call argument is a function expression or arrow function with a block body
+/// and at most one parameter, qualifying for special test call formatting.
+fn is_function_with_block_body(arg: &AnyJsCallArgument) -> SyntaxResult<bool> {
+    use AnyJsExpression::*;
+
+    let (parameters, has_block_body) = match arg {
+        AnyJsCallArgument::AnyJsExpression(JsFunctionExpression(function)) => (
+            function
+                .parameters()
+                .map(AnyJsArrowFunctionParameters::from),
+            true,
+        ),
+        AnyJsCallArgument::AnyJsExpression(JsArrowFunctionExpression(arrow)) => (
+            arrow.parameters(),
+            arrow
+                .body()
+                .is_ok_and(|body| matches!(body, AnyJsFunctionBody::JsFunctionBody(_))),
+        ),
+        _ => return Ok(false),
+    };
+
+    Ok(parameters?.len() <= 1 && has_block_body)
+}
+
+/// Checks if a call argument is an object expression literal.
+/// Used to detect TestOptions arguments like `{ retry: 2 }` in Vitest.
+fn is_object_expression(arg: &AnyJsCallArgument) -> bool {
+    matches!(
+        arg.as_any_js_expression(),
+        Some(AnyJsExpression::JsObjectExpression(_))
+    )
 }
 
 impl JsNewExpression {
